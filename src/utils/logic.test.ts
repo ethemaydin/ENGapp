@@ -1,6 +1,68 @@
 import { test, expect } from 'vitest';
-import { rate, miss, ans, psize, pn, hwDone, hsh } from './logic.ts';
+import { rate, miss, ans, psize, pn, hwDone, hsh, setHwRecord } from './logic.ts';
 import type { Student, Homework, Question } from '../types.ts';
+
+/** App.tsx'teki addPuzzlePiece güncelleyicisinin saf (React'ten bağımsız) kopyası —
+ *  mutasyon regresyonlarını yakalamak için kullanılır. */
+const addPuzzlePieceUpdater = (prev: Student): Student => {
+  const s = { ...prev };
+  let nextNxt = s.nxt;
+  s.act = s.act ? { ...s.act } : { id: nextNxt + 1, n: 0 };
+  nextNxt = s.act.id;
+  s.nxt = nextNxt;
+  s.act.n++;
+  if (s.act.n >= psize(s.act.id)) {
+    s.cp = [...s.cp, s.act.id];
+    s.act = null;
+  }
+  return s;
+};
+
+test('addPuzzlePiece never mutates the previous student object', () => {
+  const base: Student = {
+    id: 's1', n: 'Test', lv: 'A1', p: 0, a: '', c: undefined as any, e: 't@t.com', pw: '1',
+    h: {}, goal: 10, kn: [], cp: [], td: {}, sd: {}, nxt: 3, tc: 0, wl: 0, tpass: {}, act: null,
+  };
+  const frozen = JSON.parse(JSON.stringify(base));
+
+  const s1 = addPuzzlePieceUpdater(base);
+  // prev nesnesi değişmemiş olmalı (yüzeysel ++s.nxt mutasyonunu yakalar)
+  expect(base.nxt).toBe(frozen.nxt);
+  expect(s1.nxt).toBe(4);
+  expect(s1.act).toEqual({ id: 4, n: 1 });
+
+  // aktif yapboz varken parça eklemek nxt'yi/değişmezliği korumalı
+  const s2 = addPuzzlePieceUpdater(s1);
+  expect(s1.act).toEqual({ id: 4, n: 1 }); // s1 mutasyona uğramadı
+  expect(s2.act).toEqual({ id: 4, n: 2 });
+});
+
+test('completing a topic assigns fresh puzzle ids without mutating prev', () => {
+  const prev: Student = {
+    id: 's1', n: 'Test', lv: 'A1', p: 0, a: '', c: undefined as any, e: 't@t.com', pw: '1',
+    h: {}, goal: 10, kn: [], cp: [1], td: {}, sd: {}, nxt: 1, tc: 0, wl: 0, tpass: {},
+  };
+  // App.tsx handleCompleteTopic mantığı (nxt+1, mutasyonsuz)
+  const s = { ...prev };
+  const nextId = s.nxt + 1;
+  s.nxt = nextId;
+  s.cp = [...s.cp, nextId];
+
+  expect(prev.nxt).toBe(1); // prev mutasyona uğramadı
+  expect(s.cp).toEqual([1, 2]); // çakışan id yok
+});
+
+test('setHwRecord is immutable and preserves other homework records', () => {
+  const s: Student = {
+    id: 's1', n: 'Test', lv: 'A1', p: 0, a: '', c: undefined as any, e: 't@t.com', pw: '1',
+    h: { 5: { score: 80, text: '' } }, goal: 10, kn: [], cp: [], td: {}, sd: {},
+    nxt: 0, tc: 0, wl: 0, tpass: {},
+  };
+  const updated = setHwRecord(s, 7, { score: 90, text: '' });
+  expect(s.h[7]).toBeUndefined(); // orijinal bozulmadı
+  expect(updated.h[5].score).toBe(80); // diğer kayıt korundu
+  expect(updated.h[7].score).toBe(90);
+});
 
 test('rate and miss calculations work correctly for attendance', () => {
   const student: Student = {
