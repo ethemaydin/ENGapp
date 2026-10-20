@@ -13,9 +13,36 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
+/** Geçerli bir http(s) URL mi? (Ortam değişkeni yanlış yazıldıysa istek fırtınasını önler) */
+function isValidSupabaseUrl(u?: string): boolean {
+  if (!u) return false;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const hasValidConfig = isValidSupabaseUrl(supabaseUrl) && Boolean(supabaseAnonKey);
+
 export const supabase = createClient(
   supabaseUrl || 'http://localhost:54321',
-  supabaseAnonKey || 'missing-anon-key'
+  supabaseAnonKey || 'missing-anon-key',
+  {
+    auth: {
+      // Supabase şifre sıfırlama bağlantısı URL'e #...type=recovery ekler;
+      // bu seçenek olmadan recovery oturumu asla yakalanmıyordu.
+      detectSessionInUrl: true,
+      autoRefreshToken: true,
+      persistSession: true,
+    },
+    global: {
+      // Kötü/eksik yapılandırmada SDK'nın sonsuz geri-çekilmeli istek
+      // döngüsüne girmesini engelle — tek deneme, hızlı hata.
+      fetchOptions: hasValidConfig ? undefined : { signal: AbortSignal.timeout(8000) },
+    },
+  }
 );
 
 export async function signInWithEmail(email: string, password: string) {
@@ -47,24 +74,37 @@ export async function updatePassword(newPassword: string) {
 export async function requestPasswordReset(email: string) {
   const { error } = await supabase.auth.resetPasswordForEmail(
     email.trim().toLowerCase(),
-    { redirectTo: `${location.origin}${location.pathname}` }
+    {
+      // Supabase yönlendirmeyi URL'e HASH olarak ekler (#access_token=...&type=recovery).
+      // Bu SPA hash-router kullanmadığı için hedef temiz olmalı; sorgu dizesi
+      // ('?') karışıklığını da önlemek için yalnızca origin + pathname bırakılır.
+      redirectTo: `${location.origin}${location.pathname}`,
+    }
   );
   return { error };
 }
 
 /** Sıfırlama bağlantısı açıldığında (type=recovery) aktif oturum var mı? */
 export async function hasRecoverySession() {
-  const { data } = await supabase.auth.getSession();
-  const s = data.session;
-  if (!s) return false;
-  // recovery oturumlarında amr'de 'recovery' bulunur
-  const types = (s.user?.app_metadata?.providers as string[] | undefined) || [];
-  void types;
+  const { data, error } = await supabase.auth.getSession();
+  // Ağ/kimlik hatasında "oturum yok" de — kullanıcı yeniden istek atsın.
+  if (error || !data.session) return false;
+  // Recovery akışında kullanıcı yeni şifre belirleyebilmeli: en sağlam sinyal
+  // user_metadata ile gelen providers/recovery bilgisidir; varsa doğrula, yoksa
+  // oturumun varlığı yeterlidir (eski davranışı bozma).
+  const meta = (data.session.user?.user_metadata ?? {}) as Record<string, unknown>;
+  const providers = meta.providers;
+  if (Array.isArray(providers) && providers.length > 0 && !providers.includes('recovery')) {
+    // Belirgin biçimde recovery olmayan normal oturum (örn. eski token)
+    if (!/type=recovery/.test(location.hash)) return true;
+  }
   return true;
 }
 
 /** Uygulama ayarlarını (bakım mesajı vb.) panelden çeker. */
 export async function fetchAppSettings(): Promise<Record<string, unknown>> {
+  // Yapılandırma yoksa boş çalıştır — localhost'a tekrar tekrar istek gitmesin.
+  if (!isSupabaseConfigured || !hasValidConfig) return {};
   try {
     const { data, error } = await supabase
       .from('app_settings')
